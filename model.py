@@ -62,7 +62,7 @@ class Resnet(nn.Module):
     def __init__(self, backbone='resnet50', pretrained=True, weights=None):
         super(Resnet, self).__init__()
         assert backbone in ENCODER_RESNET
-        if is_old_version:
+        if is_old_version or True:
             self.encoder = getattr(models, backbone)(pretrained=pretrained)
         elif is_new_version:
             self.encoder = getattr(models, backbone)(weights=ResNet50_Weights.IMAGENET1K_V1)
@@ -195,7 +195,7 @@ class HorizonNet(nn.Module):
         self.rnn_hidden_size = 512
 
         # Encoder
-        if is_old_version:
+        if is_old_version or True:
             if backbone.startswith('res'):
                 self.feature_extractor = Resnet(backbone, pretrained=True)
             elif backbone.startswith('dense'):

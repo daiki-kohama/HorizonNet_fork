@@ -13,9 +13,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model import HorizonNet
-from dataset import visualize_a_data
-from misc import post_proc, panostretch, utils
+from .model import HorizonNet
+from .dataset import visualize_a_data
+from .misc import post_proc, panostretch, utils
 
 
 def find_N_peaks(signal, r=29, min_v=0.05, N=None):
@@ -63,7 +63,7 @@ def augment_undo(x_imgs_augmented, aug_type):
 
 
 def inference(net, x, device, flip=False, rotate=[], visualize=False,
-              force_cuboid=False, force_raw=False, min_v=None, r=0.05):
+              force_cuboid=False, min_v=None, r=0.05):
     '''
     net   : the trained HorizonNet
     x     : tensor in shape [1, 3, 512, 1024]
@@ -96,49 +96,51 @@ def inference(net, x, device, flip=False, rotate=[], visualize=False,
     z0 = 50
     _, z1 = post_proc.np_refine_by_fix_z(*y_bon_, z0)
 
-    if force_raw:
-        # Do not run post-processing, export raw polygon (1024*2 vertices) instead.
-        # [TODO] Current post-processing lead to bad results on complex layout.
-        cor = np.stack([np.arange(1024), y_bon_[0]], 1)
+    # Do not run post-processing, export raw polygon (1024*2 vertices) instead.
+    # [TODO] Current post-processing lead to bad results on complex layout.
+    cor_raw = np.stack([np.arange(1024), y_bon_[0]], 1)
 
-    else:
-        # Detech wall-wall peaks
-        if min_v is None:
-            min_v = 0 if force_cuboid else 0.05
-        r = int(round(W * r / 2))
-        N = 4 if force_cuboid else None
-        xs_ = find_N_peaks(y_cor_, r=r, min_v=min_v, N=N)[0]
+    # Detech wall-wall peaks
+    if min_v is None:
+        min_v = 0 if force_cuboid else 0.05
+    r = int(round(W * r / 2))
+    N = 4 if force_cuboid else None
+    xs_ = find_N_peaks(y_cor_, r=r, min_v=min_v, N=N)[0]
 
-        # Generate wall-walls
-        cor, xy_cor = post_proc.gen_ww(xs_, y_bon_[0], z0, tol=abs(0.16 * z1 / 1.6), force_cuboid=force_cuboid)
-        if not force_cuboid:
-            # Check valid (for fear self-intersection)
-            xy2d = np.zeros((len(xy_cor), 2), np.float32)
-            for i in range(len(xy_cor)):
-                xy2d[i, xy_cor[i]['type']] = xy_cor[i]['val']
-                xy2d[i, xy_cor[i-1]['type']] = xy_cor[i-1]['val']
-            if not Polygon(xy2d).is_valid:
-                print(
-                    'Fail to generate valid general layout!! '
-                    'Generate cuboid as fallback.',
-                    file=sys.stderr)
-                xs_ = find_N_peaks(y_cor_, r=r, min_v=0, N=4)[0]
-                cor, xy_cor = post_proc.gen_ww(xs_, y_bon_[0], z0, tol=abs(0.16 * z1 / 1.6), force_cuboid=True)
+    # Generate wall-walls
+    cor_estimate, xy_cor = post_proc.gen_ww(xs_, y_bon_[0], z0, tol=abs(0.16 * z1 / 1.6), force_cuboid=force_cuboid)
+    if not force_cuboid:
+        # Check valid (for fear self-intersection)
+        xy2d = np.zeros((len(xy_cor), 2), np.float32)
+        for i in range(len(xy_cor)):
+            xy2d[i, xy_cor[i]['type']] = xy_cor[i]['val']
+            xy2d[i, xy_cor[i-1]['type']] = xy_cor[i-1]['val']
+        if not Polygon(xy2d).is_valid:
+            print(
+                'Fail to generate valid general layout!! '
+                'Generate cuboid as fallback.',
+                file=sys.stderr)
+            xs_ = find_N_peaks(y_cor_, r=r, min_v=0, N=4)[0]
+            cor_estimate, xy_cor = post_proc.gen_ww(xs_, y_bon_[0], z0, tol=abs(0.16 * z1 / 1.6), force_cuboid=True)
 
-    # Expand with btn coory
-    cor = np.hstack([cor, post_proc.infer_coory(cor[:, 1], z1 - z0, z0)[:, None]])
+    cor_ids = []
+    for cor in [cor_raw, cor_estimate]:
+        # Expand with btn coory
+        cor = np.hstack([cor, post_proc.infer_coory(cor[:, 1], z1 - z0, z0)[:, None]])
 
-    # Collect corner position in equirectangular
-    cor_id = np.zeros((len(cor)*2, 2), np.float32)
-    for j in range(len(cor)):
-        cor_id[j*2] = cor[j, 0], cor[j, 1]
-        cor_id[j*2 + 1] = cor[j, 0], cor[j, 2]
+        # Collect corner position in equirectangular
+        cor_id = np.zeros((len(cor)*2, 2), np.float32)
+        for j in range(len(cor)):
+            cor_id[j*2] = cor[j, 0], cor[j, 1]
+            cor_id[j*2 + 1] = cor[j, 0], cor[j, 2]
 
-    # Normalized to [0, 1]
-    cor_id[:, 0] /= W
-    cor_id[:, 1] /= H
+        # Normalized to [0, 1]
+        cor_id[:, 0] /= W
+        cor_id[:, 1] /= H
 
-    return cor_id, z0, z1, vis_out
+        cor_ids.append(cor_id)
+
+    return cor_ids, z0, z1, vis_out
 
 
 if __name__ == '__main__':
@@ -164,7 +166,7 @@ if __name__ == '__main__':
     parser.add_argument('--r', default=0.05, type=float)
     parser.add_argument('--min_v', default=None, type=float)
     parser.add_argument('--force_cuboid', action='store_true')
-    parser.add_argument('--force_raw', action='store_true')
+    # parser.add_argument('--force_raw', action='store_true')
     # Misc arguments
     parser.add_argument('--no_cuda', action='store_true',
                         help='disable cuda')
@@ -200,11 +202,11 @@ if __name__ == '__main__':
             x = torch.FloatTensor([img_ori / 255])
 
             # Inferenceing corners
-            cor_id, z0, z1, vis_out = inference(net=net, x=x, device=device,
+            cor_ids, z0, z1, vis_out = inference(net=net, x=x, device=device,
                                                 flip=args.flip, rotate=args.rotate,
                                                 visualize=args.visualize,
                                                 force_cuboid=args.force_cuboid,
-                                                force_raw=args.force_raw,
+                                                # force_raw=args.force_raw,
                                                 min_v=args.min_v, r=args.r)
 
             # Output result
@@ -212,7 +214,8 @@ if __name__ == '__main__':
                 json.dump({
                     'z0': float(z0),
                     'z1': float(z1),
-                    'uv': [[float(u), float(v)] for u, v in cor_id],
+                    'cor_raw': [[float(u), float(v)] for u, v in cor_ids[0]],
+                    'cor_estimate': [[float(u), float(v)] for u, v in cor_ids[1]],
                 }, f)
 
             if vis_out is not None:
